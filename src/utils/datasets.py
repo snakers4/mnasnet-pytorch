@@ -30,6 +30,8 @@ class OiDataset(data.Dataset):
                  min_class_weight = 1,
                  img_size_cluster = 0,
                  
+                 fixed_size = (224,224),
+                 
                  data_folder = '../../../hdd/open_images/',
                  # train_imgs_folder = '../../../hdd/open_images/train/',
                  # val_imgs_folder = '../../../hdd/open_images/train/',
@@ -66,6 +68,8 @@ class OiDataset(data.Dataset):
         
         self.return_img_id = return_img_id
         self.augs = augs
+        
+        self.fixed_size = fixed_size
         
         self.prob = prob
         self.oversampling_floor = oversampling_floor
@@ -225,6 +229,205 @@ class OiDataset(data.Dataset):
                        target_size,
                        ):
 
+        final_size =  [int(_ * self.size_ratio) for _ in target_size]
+        img = imread(img_path)
+
+        # gray-scale img
+        if len(img.shape)==2:
+            # convert grayscale images to RGB
+            img = cv2.cvtColor(img,cv2.COLOR_GRAY2RGB)
+        # gif image
+        elif len(img.shape)==1:
+            img = img[0]
+        # alpha channel image
+        elif img.shape[2] == 4:
+            img = img[:,:,0:3]
+
+        img = Image.fromarray(img)
+        
+        if self.preprocessing_type == 0:
+            # fixed resize classic Imagenet Preprocessing
+            preprocessing = transforms.Compose([
+                            transforms.Resize(self.fixed_size),                
+                            transforms.ToTensor(),
+                            transforms.Normalize(mean=self.mean,
+                                                 std=self.std),
+                            ]) 
+        elif self.preprocessing_type == 1:
+            # a bit smarter Imagenet preprocessing
+            # at first resize by a smaller size, then do a center crop
+            preprocessing = transforms.Compose([
+                            transforms.Resize(self.fixed_size[0]),
+                            transforms.CenterCrop(self.fixed_size),
+                            transforms.ToTensor(),
+                            transforms.Normalize(mean=self.mean,
+                                                 std=self.std),
+                            ])               
+        elif self.preprocessing_type == 2:
+            # fixed resize to a cluster-defined size
+            preprocessing = transforms.Compose([
+                            transforms.Resize(final_size),                
+                            transforms.ToTensor(),
+                            transforms.Normalize(mean=self.mean,
+                                                 std=self.std),
+                            ])          
+        elif self.preprocessing_type == 3:
+            # some additional augmentations
+            add_transforms = [transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+                              RandomResizedCropRect(final_size,scale=(0.8, 1.0), ratio=(0.8, 1.2), interpolation=2),
+                              ]
+
+            preprocessing = transforms.Compose([
+                            transforms.Resize(final_size),
+
+                            transforms.RandomApply(add_transforms, p=self.prob),
+                            transforms.RandomHorizontalFlip(p=self.prob),
+                            transforms.RandomVerticalFlip(p=self.prob),
+                            transforms.RandomGrayscale(p=self.prob),
+
+                            transforms.ToTensor(),
+                            transforms.Normalize(mean=self.mean,
+                                                 std=self.std),
+                            ])
+        else:
+            raise ValueError('This augmentation is not supported')
+
+class ImnetDataset(data.Dataset):
+    def __init__(self,
+                 mode = 'train', # 'train' or val'
+                 random_state = 42,
+                 fold = 0,
+                 
+                 size_ratio = 1.0,
+                 preprocessing_type = 0, # 0,1,2
+                 fixed_size = (224,224),
+                 prob = 0.2,
+                 
+                 mean = (0.485, 0.456, 0.406),
+                 std = (0.229, 0.224, 0.225),
+                 
+                 imgs_folder = '../../imagenet/',
+                 df_path = '../data/imnet_cluster_df_short.feather',
+                 return_img_id = False,
+                ):
+        
+        self.std = std
+        self.fold = fold
+        self.mode = mode
+        self.mean = mean        
+
+        self.size_ratio = size_ratio
+        self.fixed_size = fixed_size
+        self.random_state = random_state
+        
+        self.prob = prob
+        self.return_img_id = return_img_id
+        self.preprocessing_type = preprocessing_type
+        
+        self.cluster_dict = {
+            0: (384,512),
+            1: (512, 512),
+            2: (512, 384)
+        }
+        
+        self.imgs_folder = imgs_folder
+        imnet_df = pd.read_feather(df_path)
+        self.label_list = sorted(imnet_df['class'].unique())
+
+        self.label2name = dict(imnet_df[['class','label_name']].drop_duplicates().set_index('class')['label_name'])
+        
+        self.target_clusters = list(imnet_df['cluster'].values)
+        self.stratify_values = list(imnet_df['cluster'].values)
+        self.filenames = list(imnet_df['filename'].values)
+        self.class_list = list(imnet_df['class'].values)
+        
+        skf = StratifiedKFold(n_splits=5,
+                              shuffle = True,
+                              random_state = self.random_state)
+        
+        f1, f2, f3, f4, f5 = skf.split(self.filenames,
+                                       self.stratify_values)
+        
+        folds = [f1, f2, f3, f4, f5]
+        
+        if self.mode == 'train':
+            self.train_idx = list(folds[self.fold][0])
+            train_idx_dict = dict(zip(self.train_idx,
+                                      range(0,len(self.train_idx))))            
+         
+            # save indexes of each cluster
+            # to be used later in sampling process
+            # leave only the train indexes
+            cluster_indices = []
+            for cluster,img_size in self.cluster_dict.items():
+                # leave only the train indexes
+                condition = (imnet_df.cluster == cluster)&(imnet_df.index.isin(self.train_idx))
+                cluster_list = list(imnet_df[condition].index.values)
+                # reindex the cluster indices with respect to the train/val split values
+                cluster_list = [train_idx_dict[_]  for _ in cluster_list]
+                cluster_indices.append(cluster_list)                    
+
+            self.cluster_indices = cluster_indices
+        elif self.mode == 'val':
+            self.val_idx = list(folds[self.fold][1])
+            val_idx_dict = dict(zip(self.val_idx,
+                                    range(0,len(self.val_idx))))
+
+            # save indexes of each cluster
+            # to be used later in sampling process
+            # leave only the train indexes
+            cluster_indices = []
+            for cluster,img_size in self.cluster_dict.items():
+                # leave only the train indexes
+                condition = (imnet_df.cluster == cluster)&(imnet_df.index.isin(self.val_idx))
+                cluster_list = list(multi_label_dataset[condition].index.values)
+                # reindex the cluster indices with respect to the train/val split values
+                cluster_list = [val_idx_dict[_]  for _ in cluster_list]
+                cluster_indices.append(cluster_list)
+
+            self.cluster_indices = cluster_indices            
+        
+        del imnet_df
+    def __len__(self):
+        if self.mode == 'train':
+            return len(self.train_idx)
+        elif self.mode == 'val':
+            return len(self.val_idx)
+    def __getitem__(self, idx):
+        if self.mode == 'train':
+            img_index = self.train_idx[idx]
+        elif self.mode == 'val':
+            img_index = self.val_idx[idx]
+        
+        img_id = self.filenames[img_index]
+        img_path = os.path.join(self.imgs_folder,img_id)
+        class_name = self.class_list[img_index]
+        
+        ohe_values = np.zeros(len(self.label_list))
+        # only one label for imagenet images
+        ohe_values[self.label_list.index(class_name)] = 1
+        
+        target_size = self.cluster_dict[self.target_clusters[img_index]]
+        img = self.preprocess_img(img_path,target_size)
+        
+        if img is None:
+            # do not return anything
+            pass
+        else:
+            # add failsafe values here
+            
+            if self.return_img_id == False:
+                return_tuple = (img,
+                                ohe_values)                
+            else:
+                return_tuple = (img,
+                                ohe_values,
+                                img_id)
+            return return_tuple 
+    def preprocess_img(self,
+                       img_path,
+                       target_size,
+                       ):
 
         final_size =  [int(_ * self.size_ratio) for _ in target_size]
         img = imread(img_path)
@@ -241,15 +444,35 @@ class OiDataset(data.Dataset):
             img = img[:,:,0:3]
 
         img = Image.fromarray(img)
-
-        if self.augs == False:
+        
+        if self.preprocessing_type == 0:
+            # fixed resize classic Imagenet Preprocessing
+            preprocessing = transforms.Compose([
+                            transforms.Resize(self.fixed_size),                
+                            transforms.ToTensor(),
+                            transforms.Normalize(mean=self.mean,
+                                                 std=self.std),
+                            ]) 
+        elif self.preprocessing_type == 1:
+            # a bit smarter Imagenet preprocessing
+            # at first resize by a smaller size, then do a center crop
+            preprocessing = transforms.Compose([
+                            transforms.Resize(self.fixed_size[0]),
+                            transforms.CenterCrop(self.fixed_size),
+                            transforms.ToTensor(),
+                            transforms.Normalize(mean=self.mean,
+                                                 std=self.std),
+                            ])               
+        elif self.preprocessing_type == 2:
+            # fixed resize to a cluster-defined size
             preprocessing = transforms.Compose([
                             transforms.Resize(final_size),                
                             transforms.ToTensor(),
                             transforms.Normalize(mean=self.mean,
                                                  std=self.std),
-                            ])
-        else:
+                            ])          
+        elif self.preprocessing_type == 3:
+            # some additional augmentations
             add_transforms = [transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
                               RandomResizedCropRect(final_size,scale=(0.8, 1.0), ratio=(0.8, 1.2), interpolation=2),
                               ]
@@ -265,9 +488,12 @@ class OiDataset(data.Dataset):
                             transforms.ToTensor(),
                             transforms.Normalize(mean=self.mean,
                                                  std=self.std),
-                            ])                
+                            ])
+        else:
+            raise ValueError('This augmentation is not supported')
+
         img_arr = preprocessing(img).numpy()
-        return img_arr
+        return img_arr    
     
 class RandomResizedCropRect(transforms.RandomResizedCrop):
     """Extend the PyTorch function so that it could accept non-square images
