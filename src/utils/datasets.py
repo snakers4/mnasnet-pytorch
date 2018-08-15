@@ -14,6 +14,8 @@ from sklearn.model_selection import StratifiedKFold
 from skimage.io import imread
 from multiprocessing import Pool
 
+from utils.bbox_tools import bb_tuple2dict_2d,bbox_inside_2d,iou_2d
+
 cv2.setNumThreads(0)
 
 class OiDataset(data.Dataset):
@@ -432,6 +434,243 @@ class ImnetDataset(data.Dataset):
         final_size =  [int(_ * self.size_ratio) for _ in target_size]
         img = imread(img_path)
 
+        # gray-scale img
+        if len(img.shape)==2:
+            # convert grayscale images to RGB
+            img = cv2.cvtColor(img,cv2.COLOR_GRAY2RGB)
+        # gif image
+        elif len(img.shape)==1:
+            img = img[0]
+        # alpha channel image
+        elif img.shape[2] == 4:
+            img = img[:,:,0:3]
+
+        img = Image.fromarray(img)
+        
+        if self.preprocessing_type == 0:
+            # fixed resize classic Imagenet Preprocessing
+            preprocessing = transforms.Compose([
+                            transforms.Resize(self.fixed_size),                
+                            transforms.ToTensor(),
+                            transforms.Normalize(mean=self.mean,
+                                                 std=self.std),
+                            ]) 
+        elif self.preprocessing_type == 1:
+            # a bit smarter Imagenet preprocessing
+            # at first resize by a smaller size, then do a center crop
+            preprocessing = transforms.Compose([
+                            transforms.Resize(self.fixed_size[0]),
+                            transforms.CenterCrop(self.fixed_size),
+                            transforms.ToTensor(),
+                            transforms.Normalize(mean=self.mean,
+                                                 std=self.std),
+                            ])               
+        elif self.preprocessing_type == 2:
+            # fixed resize to a cluster-defined size
+            preprocessing = transforms.Compose([
+                            transforms.Resize(final_size),                
+                            transforms.ToTensor(),
+                            transforms.Normalize(mean=self.mean,
+                                                 std=self.std),
+                            ])          
+        elif self.preprocessing_type == 3:
+            # some additional augmentations
+            add_transforms = [transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+                              RandomResizedCropRect(final_size,scale=(0.8, 1.0), ratio=(0.8, 1.2), interpolation=2),
+                              ]
+
+            preprocessing = transforms.Compose([
+                            transforms.Resize(final_size),
+
+                            transforms.RandomApply(add_transforms, p=self.prob),
+                            transforms.RandomHorizontalFlip(p=self.prob),
+                            transforms.RandomVerticalFlip(p=self.prob),
+                            transforms.RandomGrayscale(p=self.prob),
+
+                            transforms.ToTensor(),
+                            transforms.Normalize(mean=self.mean,
+                                                 std=self.std),
+                            ])
+        else:
+            raise ValueError('This augmentation is not supported')
+
+        img_arr = preprocessing(img).numpy()
+        return img_arr    
+
+class TelenavClassification(data.Dataset):
+    def __init__(self,
+                 mode = 'train', # 'train' or val'
+                 random_state = 42,
+                 fold = 0,
+                 
+                 size_ratio = 1.0,
+                 preprocessing_type = 0, # 0,1,2
+                 fixed_size = (1024,1024),
+                 prob = 0.2,
+                 
+                 mean = (0.485, 0.456, 0.406),
+                 std = (0.229, 0.224, 0.225),
+                 
+                 imgs_folder = '../../telenav/data/telenav_ai_dataset/train_data/',
+                 df_path = '../data/telenav_df.feather',
+                 return_img_id = False,
+                 
+                 all_classes = True
+                ):
+        
+        self.std = std
+        self.fold = fold
+        self.mode = mode
+        self.mean = mean        
+
+        self.size_ratio = size_ratio
+        self.fixed_size = fixed_size
+        self.random_state = random_state
+        
+        self.prob = prob
+        self.return_img_id = return_img_id
+        self.preprocessing_type = preprocessing_type
+        
+        self.imgs_folder = imgs_folder
+        self.df = pd.read_feather(df_path)
+        self.all_classes = all_classes
+        
+        self.roi_hierarchy = {'GIVE_WAY':'OTHER_SIGN',
+                         'SL_STOP_SIGN':'OTHER_SIGN',
+                         'SL_US_10':'SPEED_LIMIT',
+                         'SL_US_15':'SPEED_LIMIT',
+                         'SL_US_20':'SPEED_LIMIT',
+                         'SL_US_25':'SPEED_LIMIT',
+                         'SL_US_30':'SPEED_LIMIT',
+                         'SL_US_35':'SPEED_LIMIT',
+                         'SL_US_40':'SPEED_LIMIT',
+                         'SL_US_45':'SPEED_LIMIT',
+                         'SL_US_5':'SPEED_LIMIT',
+                         'SL_US_50':'SPEED_LIMIT',
+                         'SL_US_55':'SPEED_LIMIT',
+                         'SL_US_60':'SPEED_LIMIT',
+                         'SL_US_65':'SPEED_LIMIT',
+                         'SL_US_70':'SPEED_LIMIT',
+                         'SL_US_75':'SPEED_LIMIT',
+                         'SL_US_80':'SPEED_LIMIT',
+                         'TRAFFIC_LIGHTS_SIGN':'TRAFFIC_LIGHTS',
+                         'TURN_RESTRICTION_US_LEFT':'OTHER_SIGN',
+                         'TURN_RESTRICTION_US_LEFT_UTURN':'OTHER_SIGN',
+                         'TURN_RESTRICTION_US_RIGHT':'OTHER_SIGN',
+                         'TURN_RESTRICTION_US_UTURN':'OTHER_SIGN'}        
+        
+        # ensure the same order
+        self.type_list = sorted(self.df['roi_type'].unique())
+        self.subtype_list = sorted(set([self.roi_hierarchy[_] for _ in self.type_list]))
+        
+        unq_df = pd.DataFrame(df[['img_name','bbox_size_bin']].groupby('img_name')['bbox_size_bin'].min())        
+       
+        self.stratify_values = list(unq_df.bbox_size_bin.values)
+        self.filenames = list(unq_df.index.values)
+        
+        skf = StratifiedKFold(n_splits=5,
+                              shuffle = True,
+                              random_state = self.random_state)
+        
+        f1, f2, f3, f4, f5 = skf.split(self.filenames,
+                                       self.stratify_values)
+        
+        folds = [f1, f2, f3, f4, f5]
+        
+        # no clusterization required
+        if self.mode == 'train':
+            self.train_idx = list(folds[self.fold][0])
+        elif self.mode == 'val':
+            self.val_idx = list(folds[self.fold][1])
+    def __len__(self):
+        if self.mode == 'train':
+            return len(self.train_idx)
+        elif self.mode == 'val':
+            return len(self.val_idx)
+    def __getitem__(self, idx):
+        if self.mode == 'train':
+            img_index = self.train_idx[idx]
+        elif self.mode == 'val':
+            img_index = self.val_idx[idx]
+        
+        img_id = self.filenames[img_index]
+        img_path = os.path.join(self.imgs_folder,img_id)
+        
+        roi_df = self.df[self.df.img_name==img_id]     
+        
+        w = roi_df.h.min()
+        h = roi_df.w.min()
+        x_crop = random.randint(0,w-1024)
+        y_crop = random.randint(0,h-1024)
+        crop_tuple = ((x_crop,x_crop+1024),(y_crop,y_crop+1024))
+        crop_bbox = bb_tuple2dict_2d(crop_tuple)
+
+        bboxes = []
+        classes = []
+
+        for i,row in roi_df.iterrows():
+            bbox_tuple = ((row['tl_col'],row['br_col']),(row['tl_row'],row['br_row']))
+            bboxes.append(bb_tuple2dict_2d(bbox_tuple))
+            classes.append(row.roi_type)
+
+        cropped_bboxes = []
+        cropped_classes = []
+
+        for bbox,class_ in zip(bboxes,classes):
+            if bbox_inside_2d(bbox,crop_bbox):
+                cropped_bboxes.append(bbox)
+                cropped_classes.append(class_)
+            else:
+                if iou_2d(bbox,crop_bbox):
+                    partial_bbox = {'x1': max(bbox['x1'],crop_bbox['x1']),
+                                    'x2': min(bbox['x2'],crop_bbox['x2']),
+                                    'y1': max(bbox['y1'],crop_bbox['y1']),
+                                    'y2': max(bbox['y2'],crop_bbox['y2'])
+                                   }
+                    if iou_2d(bbox,partial_bbox)>0.5:
+                        cropped_bboxes.append(partial_bbox)
+                        cropped_classes.append(class_)               
+
+        # one hot encode the classes
+        # do it for classes / subclasses
+        if self.all_classes:
+            ohe_values = np.zeros(len(self.type_list))
+            for _ in list(set(cropped_classes)):
+                ohe_values[self.type_list.index(_)] = 1
+        else:
+            ohe_values = np.zeros(len(self.subtype_list))
+            for _ in list(set(cropped_classes)):
+                ohe_values[self.subtype_list.index(self.roi_hierarchy[_])] = 1            
+        
+        target_size = self.fixed_size
+        img = self.preprocess_img(img_path,
+                                  target_size,
+                                  [slice(crop_bbox['y1'], crop_bbox['y2'], None),
+                                   slice(crop_bbox['x1'], crop_bbox['x2'], None)])
+        
+        if img is None:
+            # do not return anything
+            pass
+        else:
+            # add failsafe values here
+            
+            if self.return_img_id == False:
+                return_tuple = (img,
+                                ohe_values)                
+            else:
+                return_tuple = (img,
+                                ohe_values,
+                                img_id)
+            return return_tuple 
+    def preprocess_img(self,
+                       img_path,
+                       target_size,
+                       crop_slice
+                       ):
+            
+        final_size =  [int(_ * self.size_ratio) for _ in target_size]
+        img = imread(img_path)[crop_slice[0],crop_slice[1],:]
+        
         # gray-scale img
         if len(img.shape)==2:
             # convert grayscale images to RGB
