@@ -1,8 +1,36 @@
+import os
+import sys
 import torch
 import torch.nn as nn
+import torch.utils.model_zoo as model_zoo
 
 default_activation = nn.ReLU6
 debug_global = False
+
+__all__ = ['mnasnet', 'MNasNet']
+
+pretrained_settings = {
+    'mnasnet': {
+        'imagenet': {
+            'url': '',
+            'input_space': 'RGB',
+            'input_size': [3, 224, 224],
+            'input_range': [0, 1],
+            'mean': [0.485, 0.456, 0.406],
+            'std': [0.229, 0.224, 0.225],
+            'num_classes': 1000
+        },
+        'openimages_multi': {
+            'url': 'http://data.lip6.fr/cadene/pretrainedmodels/inceptionv4-8e4777a0.pth',
+            'input_space': 'RGB',
+            'input_size': [3, 224, 224],
+            'input_range': [0, 1],
+            'mean': [0.485, 0.456, 0.406],
+            'std': [0.229, 0.224, 0.225],
+            'num_classes': 74
+        }
+    }
+}
 
 class ConvBlock(nn.Module):
     def __init__(self,
@@ -140,7 +168,7 @@ class Mnasnet(nn.Module):
     def __init__(self):
         super(Mnasnet, self).__init__()
         
-        self.sequence = nn.Sequential(ConvBlock(3, 32, kernel_size=3, stride=2, padding=1),
+        self.features = nn.Sequential(ConvBlock(3, 32, kernel_size=3, stride=2, padding=1),
                                       SepConv(32, 16, kernel_size=3),
                                       MBConv(16, 24, channel_factor=3, layers=3, kernel_size=3, reduce=True),
                                       MBConv(24, 40, channel_factor=3, layers=3, kernel_size=5, reduce=True),
@@ -151,5 +179,5 @@ class Mnasnet(nn.Module):
                                      )
     
     def forward(self, input):
-        output = self.sequence(input)
+        output = self.features(input)
         return output
