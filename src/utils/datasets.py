@@ -51,7 +51,6 @@ class OiDataset(data.Dataset):
                  multi_label_dataset_path = '../data/multi_label_imgs_class_count_corrected_relatons_ohe.csv',
                   
                  return_img_id = False,
-                 augs = False,
                  stratify_label = 'class_count',
                  prob = 0.25,
                  oversampling_floor = 8,
@@ -69,7 +68,6 @@ class OiDataset(data.Dataset):
         self.min_class_weight = min_class_weight
         
         self.return_img_id = return_img_id
-        self.augs = augs
         
         self.fixed_size = fixed_size
         
