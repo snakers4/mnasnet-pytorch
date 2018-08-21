@@ -28,7 +28,8 @@ from torch.nn import Sigmoid
 from tensorboardX import SummaryWriter
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
-from torch.optim.lr_scheduler import MultiStepLR
+from utils.cyclic_lr import CyclicLR
+from torch.optim.lr_scheduler import MultiStepLR, ExponentialLR, ReduceLROnPlateau
 
 #============ Custom classes ============#
 from models.classifiers import load_model,FineTuneModelPool
@@ -73,7 +74,7 @@ parser.add_argument('--augs_prob',           default=0.25,          type=float, 
 parser.add_argument('--lr',                  default=1e-3,          type=float, help='initial learning rate')
 parser.add_argument('--optimizer',           default='adam',        type=str, help='model optimizer')
 parser.add_argument('--lr_regime',           default='decay',       type=str, help='plateau_decay, clr, manual_decay')
-parser.add_argument('--epochs_grow_size',    default=0,             type=int, help='number of epochs before size ration grows 2x.\
+parser.add_argument('--epochs_grow_size',    default=10000,         type=int, help='number of epochs before size ration grows 2x.\
                                                                                     Batch-size is divided 2x. Max ratio is 1.\
                                                                                     If 0 then no decay is applied')
 
@@ -112,6 +113,49 @@ if not (args.predict or args.predict_train):
 # Set the Tensorboard logger
 if args.tensorboard or args.tensorboard_images:
     writer = SummaryWriter('runs/{}'.format(args.lognumber))
+
+    
+def get_datasets(base_dset_kwargs):
+    global args
+    if args.dataset == 'imagenet':
+        train_dataset = ImnetDataset(base_dset_kwargs)
+        val_dataset = ImnetDataset({**base_dset_kwargs, **{'mode':'val'}})
+        train_sampler = None
+        val_sampler = None
+
+    elif args.dataset == 'openimages':                  
+        train_dataset = OiDataset({**base_dset_kwargs, **{'img_size_cluster':'sample'}})
+        val_dataset = OiDataset({**base_dset_kwargs, **{'img_size_cluster':'sample',
+                                                        'mode':'val',
+                                                       }})
+        train_sampler = ClusterRandomSampler(train_dataset,args.batch_size,True)  
+        val_sampler = ClusterRandomSampler(val_dataset,args.batch_size,True)  
+
+    elif args.dataset == 'telenav':   
+        train_dataset = TelenavClassification(base_dset_kwargs)
+        val_dataset = TelenavClassification({**base_dset_kwargs, **{'mode':'val'}})
+        train_sampler = None
+        val_sampler = None
+        
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,        
+        shuffle=True,
+        sampler=train_sampler,
+        num_workers=args.workers,
+        pin_memory=True,
+        drop_last=False)
+
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,        
+        shuffle=True,
+        sampler=val_sampler,
+        num_workers=args.workers,
+        pin_memory=True,
+        drop_last=False)        
+        
+    return train_dataset,val_dataset,train_sampler,val_sampler,train_loader,val_loader
 
 def main():
     global args, best_loss
@@ -178,44 +222,11 @@ def main():
     if args.predict:
         pass
     elif args.evaluate:
-        
-        hard_dice_05 = HardDice(threshold=0.5)
-        
-        val_dataset = OiDataset(mode = 'val',
-                                random_state = args.seed,
-                                fold = args.fold,
-                                size_ratio = args.size_ratio,
-                                
-                                mean = mean,
-                                std = std,
-                                
-                                img_size_cluster = 'sample',
-                                
-                                weight_log_base = args.weight_log_base,
-                                min_class_weight = args.min_class_weight,
-                                
-                                return_img_id = True)
-        
-        # do not reshuffle the batches
-        # but note - with this sampler - their order will be somehow random - and some images will be dropped
-        val_sampler = ClusterRandomSampler(val_dataset,args.batch_size,False)  
-        
-        val_loader = torch.utils.data.DataLoader(
-            val_dataset,
-            batch_size=args.batch_size,        
-            shuffle=False,
-            sampler=val_sampler,
-            num_workers=args.workers,
-            pin_memory=True,
-            drop_last=False)        
-        
-        evaluate(val_loader,
-                 model,
-                 hard_dice_05)
-        
+        pass
     else:
         base_dset_kwargs = {
             'mode':'train',
+            'random_state':args.seed,
             'fold':args.fold,
             
             'size_ratio':args.size_ratio,
@@ -227,123 +238,38 @@ def main():
             'std':std,
         }
         
-        if args.dataset == 'imagenet':
-            train_dataset = ImnetDataset(base_dset_kwargs)
-            val_dataset = ImnetDataset({**base_dset_kwargs, **{'mode':'val'}})
-            train_sampler = None
-            val_sampler = None
-            
-        elif args.dataset == 'openimages':                  
-            train_dataset = OiDataset({**base_dset_kwargs, **{'img_size_cluster':'sample'}})
-            val_dataset = OiDataset({**base_dset_kwargs, **{'img_size_cluster':'sample',
-                                                            'mode':'val',
-                                                           }})
-            train_sampler = ClusterRandomSampler(train_dataset,args.batch_size,True)  
-            val_sampler = ClusterRandomSampler(val_dataset,args.batch_size,True)  
-                
-        elif args.dataset == 'telenav':   
-            train_dataset = TelenavClassification(base_dset_kwargs)
-            val_dataset = TelenavClassification({**base_dset_kwargs, **{'mode':'val'}})
-            train_sampler = None
-            val_sampler = None            
+        train_dataset,val_dataset,train_sampler,val_sampler,train_loader,val_loader = get_datasets(base_dset_kwargs)
         
-        train_loader = torch.utils.data.DataLoader(
-            train_dataset,
-            batch_size=args.batch_size,        
-            shuffle=False,
-            sampler=train_sampler,
-            num_workers=args.workers,
-            pin_memory=True,
-            drop_last=False)
-        
-        val_loader = torch.utils.data.DataLoader(
-            val_dataset,
-            batch_size=args.batch_size,        
-            shuffle=False,
-            sampler=val_sampler,
-            num_workers=args.workers,
-            pin_memory=True,
-            drop_last=False)        
-        
-        criterion = MultiClassBCELoss(use_weight_mask=args.weight_mask,use_focal_weights=args.focal_weights).to(device)
+        criterion = MultiClassBCELoss().to(device)
         hard_dice_05 = HardDice(threshold=0.5)
         hard_dice_09 = HardDice(threshold=0.9)
 
-        scheduler = MultiStepLR(optimizer, milestones=[args.m1,args.m2], gamma=0.1)  
+        if args.lr_regime=='auto_decay':
+            scheduler = ExponentialLR(optimizer = optimizer,
+                                      gamma = 0.9,
+                                      last_epoch=-1)
+        elif args.lr_regime=='plateau_decay':
+            scheduler = ReduceLROnPlateau(optimizer=optimizer,
+                                          mode='max',
+                                          factor=0.5,
+                                          patience=5,
+                                          verbose=True) 
+        elif args.lr_regime=='clr': 
+            scheduler = CyclicLR(optimizer = optimizer,
+                                 base_lr = 1e-4,
+                                 max_lr = 1e-2,
+                                 step_size = 1200,
+                                 mode = 'exp_range',
+                                 gamma = 0.95
+                                 )
+                
 
         for epoch in range(args.start_epoch, args.epochs):
-            
-            if loaded_from_checkpoint == False:
-                if epoch==args.m0:
-                    print('Trainable param groups BEFORE UNfreeze {}'.format(len(list(filter(lambda p: p.requires_grad, model.parameters())))))                  
-                    
-                    if args.use_parallel:
-                        model.module.unfreeze()
-                    else:
-                        model.unfreeze()
-                    
-                    print('Encoder unfrozen!')
-                    print('Trainable param groups AFTER UNfreeze {}'.format(len(list(filter(lambda p: p.requires_grad, model.parameters())))))              
-
-                    if args.use_parallel:
-                        params = model.module.parameters()
-                    else:
-                        params = model.parameters()                    
-                    
-                    if args.optimizer.startswith('adam'):
-                        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, params),
-                                                     # Only finetunable params
-                                                     lr=args.lr)
-                    elif args.optimizer.startswith('rmsprop'):
-                        optimizer = torch.optim.RMSprop(filter(lambda p: p.requires_grad, params),
-                                                        # Only finetunable params
-                                                        lr=args.lr)
-                    elif args.optimizer.startswith('sgd'):
-                        optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, params),
-                                                    # Only finetunable params
-                                                    lr=args.lr)
-                    else:
-                        raise ValueError('Optimizer not supported')
-
-                    # we are assuming that m0 <= m1
-
-                    if args.m1<args.m2:
-                        milestones = [args.m1-args.m0,args.m2-args.m0]
-                    else:
-                        milestones = [args.m1-args.m0]
-
-                    scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=0.1)                      
-            else:
-                print('Trainable param groups BEFORE UNfreeze {}'.format(len(list(filter(lambda p: p.requires_grad, model.parameters())))))                  
-                if args.use_parallel:
-                    model.module.unfreeze()
-                else:
-                    model.unfreeze()
-                print('Encoder unfrozen!')
-                print('Trainable param groups AFTER UNfreeze {}'.format(len(list(filter(lambda p: p.requires_grad, model.parameters())))))        
+            if (epoch+1)%epochs_grow_size==0:
+                # increase the current size ration by a factor of 2
+                train_dataset,val_dataset,train_sampler,val_sampler,train_loader,val_loader = get_datasets({**base_dset_kwargs,
+                                                                                                            **{'size_ratio':train_dataset.size_ratio*2}})
                 
-                if args.use_parallel:
-                    params = model.module.parameters()
-                else:
-                    params = model.parameters()
-                
-                if args.optimizer.startswith('adam'):
-                    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, params),
-                                                 # Only finetunable params
-                                                 lr=args.lr)
-                elif args.optimizer.startswith('rmsprop'):
-                    optimizer = torch.optim.RMSprop(filter(lambda p: p.requires_grad, params),
-                                                    # Only finetunable params
-                                                    lr=args.lr)
-                elif args.optimizer.startswith('sgd'):
-                    optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, params),
-                                                # Only finetunable params
-                                                lr=args.lr)
-                else:
-                    raise ValueError('Optimizer not supported')                   
-                
-                optimizer.load_state_dict(checkpoint['optimizer'])
-                   
                 
             # train for one epoch
             train_loss, train_hard_dice_05, train_hard_dice_09 = train(train_loader,
@@ -351,7 +277,8 @@ def main():
                                                                       criterion,
                                                                       hard_dice_05,hard_dice_09,
                                                                       optimizer,
-                                                                      epoch)
+                                                                      epoch,
+                                                                      scheduler)
 
             # evaluate on validation set
             val_loss, val_hard_dice_05, val_hard_dice_09, val_f1 = validate(val_loader,
@@ -360,7 +287,11 @@ def main():
                                                                             hard_dice_05,
                                                                             hard_dice_09)
             
-            scheduler.step()
+            if args.lr_regime=='auto_decay':
+                scheduler.step()
+            elif args.lr_regime=='plateau_decay':
+                scheduler.step()
+
 
             #============ TensorBoard logging ============#
             # Log the scalar values        
@@ -395,7 +326,8 @@ def train(train_loader,
           criterion,
           hard_dice_05,hard_dice_09,
           optimizer,
-          epoch):
+          epoch,
+          scheduler):
                                             
     global train_minib_counter
     global logger
@@ -454,6 +386,9 @@ def train(train_loader,
             writer.add_scalar('train/train_lr', current_lr, train_minib_counter)                    
 
         train_minib_counter += 1
+        
+        if args.lr_regime=='clr':             
+            scheduler.batch_step()        
 
         if i % args.print_freq == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
