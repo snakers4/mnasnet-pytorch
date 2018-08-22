@@ -23,7 +23,6 @@ class FineTuneModelPool(nn.Module):
         super(FineTuneModelPool, self).__init__()
 
         self.num_classes = num_classes
-        self.is_mixed = is_mixed
         
         if arch.startswith('resnet'):
             # Everything except the last linear layer

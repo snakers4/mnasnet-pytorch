@@ -8,9 +8,9 @@ def batch_metrics(batch_gt_vector,
                   f1_only=False):
     
     if type(batch_gt_vector) == torch.Tensor:
-        batch_gt_vector = batch_gt_vector.cpu().numpy()
+        batch_gt_vector = batch_gt_vector.detach().cpu().numpy()
     if type(batch_pred_vector) == torch.Tensor:
-        batch_pred_vector = batch_pred_vector.cpu().numpy()
+        batch_pred_vector = batch_pred_vector.detach().cpu().numpy()
     
     metric_list = []
     

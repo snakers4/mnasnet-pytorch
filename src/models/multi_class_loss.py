@@ -48,15 +48,16 @@ class MultiClassBCELoss(nn.Module):
     def forward(self,
                 outputs,
                 targets,
-                weights):
+                weights=None):
         # inputs and targets are assumed to be BatchxClasses
         assert len(outputs.shape) == len(targets.shape)
         assert outputs.size(0) == targets.size(0)
         assert outputs.size(1) == targets.size(1)
         
-        # weights are assumed to be BatchxClasses
-        assert outputs.size(0) == weights.size(0)
-        assert outputs.size(1) == weights.size(1)
+        if weights is not None:
+            # weights are assumed to be BatchxClasses
+            assert outputs.size(0) == weights.size(0)
+            assert outputs.size(1) == weights.size(1)
 
         if self.use_weight_mask:
             bce_loss = F.binary_cross_entropy_with_logits(input=outputs,

@@ -2,6 +2,7 @@ import os
 import sys
 import torch
 import torch.nn as nn
+from torch.nn import init
 import torch.utils.model_zoo as model_zoo
 
 default_activation = nn.ReLU6
@@ -177,7 +178,23 @@ class Mnasnet(nn.Module):
                                       MBConv(96, 192, channel_factor=6, layers=4, kernel_size=5, reduce=True),
                                       MBConv(192, 320, channel_factor=6, layers=1, kernel_size=3, reduce=False)
                                      )
-    
+        
+        self.init_params()
+        
+    def init_params(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                init.kaiming_normal_(m.weight, mode='fan_out')
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                init.constant_(m.weight, 1)
+                init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                init.normal_(m.weight, std=0.001)
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
+
     def forward(self, input):
         output = self.features(input)
         return output

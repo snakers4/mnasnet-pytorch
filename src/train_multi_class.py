@@ -27,7 +27,8 @@ import torch.utils.data
 from torch.nn import Sigmoid
 from tensorboardX import SummaryWriter
 from utils.text_logger import CsvLogger
-            
+
+import torchvision.utils as vutils
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 from utils.cyclic_lr import CyclicLR
@@ -37,7 +38,7 @@ from torch.optim.lr_scheduler import MultiStepLR, ExponentialLR, ReduceLROnPlate
 from models.classifiers import load_model,FineTuneModelPool
 from models.multi_class_loss import MultiClassBCELoss, HardDice
 
-from utils.ClusterRandomSampler import ClusterRandomSampler
+from utils.cluster_random_sampler import ClusterRandomSampler
 from utils.datasets import OiDataset,ImnetDataset,TelenavClassification
 
 from utils.metric import batch_metrics
@@ -117,35 +118,37 @@ if args.tensorboard or args.tensorboard_images:
     writer = SummaryWriter('runs/{}'.format(args.lognumber))
     csv_writer = CsvLogger(filepath='./runs/',
                            filename='{}.csv'.format(args.lognumber),
-                           fieldsnames = ['epoch', 'train_acc', 'val_acc',
+                           fieldsnames = ['epoch',
+                                          'train_acc', 'val_acc',
                                           'train_f1', 'val_f1'])
     
 def get_datasets(base_dset_kwargs):
     global args
     if args.dataset == 'imagenet':
-        train_dataset = ImnetDataset(base_dset_kwargs)
-        val_dataset = ImnetDataset({**base_dset_kwargs, **{'mode':'val'}})
+        train_dataset = ImnetDataset(**base_dset_kwargs)
+        val_dataset = ImnetDataset(**{**base_dset_kwargs, **{'mode':'val'}})
         train_sampler = ClusterRandomSampler(train_dataset,args.batch_size,True)  
         val_sampler = ClusterRandomSampler(val_dataset,args.batch_size,True)
-
+        shuffle = False
     elif args.dataset == 'openimages':                  
-        train_dataset = OiDataset({**base_dset_kwargs, **{'img_size_cluster':'sample'}})
-        val_dataset = OiDataset({**base_dset_kwargs, **{'img_size_cluster':'sample',
+        train_dataset = OiDataset(**{**base_dset_kwargs, **{'img_size_cluster':'sample'}})
+        val_dataset = OiDataset(**{**base_dset_kwargs, **{'img_size_cluster':'sample',
                                                         'mode':'val',
                                                        }})
         train_sampler = ClusterRandomSampler(train_dataset,args.batch_size,True)  
         val_sampler = ClusterRandomSampler(val_dataset,args.batch_size,True)  
-
+        shuffle = False
     elif args.dataset == 'telenav':   
-        train_dataset = TelenavClassification(base_dset_kwargs)
-        val_dataset = TelenavClassification({**base_dset_kwargs, **{'mode':'val'}})
+        train_dataset = TelenavClassification(**base_dset_kwargs)
+        val_dataset = TelenavClassification(**{**base_dset_kwargs, **{'mode':'val'}})
         train_sampler = None
         val_sampler = None
+        shuffle = True
         
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,        
-        shuffle=True,
+        shuffle=shuffle,
         sampler=train_sampler,
         num_workers=args.workers,
         pin_memory=True,
@@ -154,7 +157,7 @@ def get_datasets(base_dset_kwargs):
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size,        
-        shuffle=True,
+        shuffle=shuffle,
         sampler=val_sampler,
         num_workers=args.workers,
         pin_memory=True,
@@ -270,25 +273,26 @@ def main():
                 
 
         for epoch in range(args.start_epoch, args.epochs):
-            if (epoch+1)%epochs_grow_size==0:
-                # increase the current size ration by a factor of 2
-                train_dataset,val_dataset,train_sampler,val_sampler,train_loader,val_loader = get_datasets({**base_dset_kwargs,
-                                                                                                            **{'size_ratio':train_dataset.size_ratio*2}})
-                
+            if args.epochs_grow_size>0:
+                if (epoch+1)%args.epochs_grow_size==0:
+                    # increase the current size ration by a factor of 2
+                    train_dataset,val_dataset,train_sampler,val_sampler,train_loader,val_loader = get_datasets({**base_dset_kwargs,
+                                                                                                                **{'size_ratio':train_dataset.size_ratio*2}})
+
             # train for one epoch
-            train_loss, train_hard_dice_05, train_f1, train_acc = train(train_loader,
-                                                                        model,
-                                                                        criterion,
-                                                                        hard_dice_05,
-                                                                        optimizer,
-                                                                        epoch,
-                                                                        scheduler)
+            train_loss, train_hard_dice_05, train_f1 = train(train_loader,
+                                                             model,
+                                                             criterion,
+                                                             hard_dice_05,
+                                                             optimizer,
+                                                             epoch,
+                                                             scheduler)
 
             # evaluate on validation set
-            val_loss, val_hard_dice_05, val_f1, val_acc = validate(val_loader,
-                                                                   model,
-                                                                   criterion,
-                                                                   hard_dice_05)
+            val_loss, val_hard_dice_05, val_f1 = validate(val_loader,
+                                                         model,                                                                        
+                                                         criterion,
+                                                         hard_dice_05)
             
             if args.lr_regime=='auto_decay':
                 scheduler.step()
@@ -304,19 +308,24 @@ def main():
                     
                 writer.add_scalars('epoch/epoch_hdice05', {'train_hdice': train_hard_dice_05,
                                                           'val_hdice': val_hard_dice_05},epoch+1)
-                    
-                writer.add_scalars('epoch/epoch_acc', {'train_acc': train_acc,
-                                                          'val_acc': val_acc},epoch+1)
+                
+                """ 
+                writer.add_scalars('epoch/epoch_acc1', {'train_acc1': train_acc1,
+                                                        'val_acc1': val_acc1},epoch+1)
+                
+                writer.add_scalars('epoch/epoch_acc5', {'train_acc5': train_acc5,
+                                                        'val_acc5': val_acc5},epoch+1)                
+                """
                 
                 writer.add_scalars('epoch/epoch_f1', {'train_f1': train_f1,
                                                       'val_f1': val_f1},epoch+1)                        
 
             csv_writer.write({'epoch':epoch+1,
-                              'train_acc':train_acc,
-                              'val_acc':val_acc,
+                              'train_acc':train_hard_dice_05,
+                              'val_acc':val_hard_dice_05,
                               'train_f1':train_f1,
-                              'val_f1':val_f1})                
-                
+                              'val_f1':val_f1})  
+    
             # remember best prec@1 and save checkpoint
             is_best = val_f1 > best_f1
             best_f1 = max(val_f1, best_f1)
@@ -351,7 +360,6 @@ def train(train_loader,
     losses = AverageMeter()
     hdices05 = AverageMeter()
 
-    acc_meter = AverageMeter()
     f1_meter = AverageMeter()    
 
     # switch to train mode
@@ -365,11 +373,10 @@ def train(train_loader,
 
         input = input.float().to(device)
         target = target.float().to(device)                    
-        weight = weight.float().to(device) 
                     
         out = model(input)
         
-        loss = criterion(out, target, weight)
+        loss = criterion(out, target)
         _hard_dice_05 = hard_dice_05(out, target)
                     
         # compute gradient and do SGD step
@@ -392,13 +399,12 @@ def train(train_loader,
         metric_list = batch_metrics(target,
                                     out,
                                     threshold=0.5,
-                                    f1_only=False)
-
+                                    f1_only=True)
+        
         metric_list = list(map(list, zip(*metric_list)))
-        acc_meter.update(sum(metric_list[0])/len(metric_list[0]), input.size(0))         
-        f1_meter.update(sum(metric_list[1])/len(metric_list[1]), input.size(1))        
-        
-        
+        f1_meter.update(sum(metric_list[0])/len(metric_list[0]), input.size(1))   
+
+                                
         #============ TensorBoard logging ============#
         # Log the scalar values        
         if args.tensorboard:
@@ -414,14 +420,23 @@ def train(train_loader,
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Time   {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data   {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'Loss   {loss.val:.6f} ({loss.avg:.6f})\t'
-                  'ACC   {acc_meter.val:.4f} ({acc_meter.avg:.4f})\t'
-                  'F1   {f1_meter.val:.4f} ({f1_meter.avg:.4f})\t'
+                  'Loss   {loss.val:.6f} ({loss.avg:.6f})\t'              
+                  'F1     {f1_meter.val:.4f} ({f1_meter.avg:.4f})\t'
                   'HDICE  {hdices05.val:.4f} ({hdices05.avg:.4f})\t'.format(
                    epoch,i, len(train_loader),
                    batch_time=batch_time,data_time=data_time,
                    loss=losses,
-                   hdices05=hdices05,acc_meter=acc_meter,f1_meter=f1_meter))
+                   hdices05=hdices05,f1_meter=f1_meter))
+            
+        # dummy_img = torch.rand(32, 3, 64, 64)  # output from network
+        
+        if args.tensorboard_images:
+            if i % (args.print_freq * 10) == 0:
+                _ = vutils.make_grid(input[0:4,:,:,:].cpu(),
+                                     normalize=True,
+                                     scale_each=True)
+                writer.add_image('train_imgs', _, i)            
+
                     
         # break out of cycle early if required
         # must be used with Dataloader shuffle = True
@@ -432,11 +447,10 @@ def train(train_loader,
 
     print(' * Avg Train Loss  {loss.avg:.6f}'.format(loss=losses))
     print(' * Avg Train HDICE {hdices05.avg:.4f}'.format(hdices05=hdices05))
-    print(' * Avg Train ACC   {acc_meter.avg:.4f}'.format(acc_meter=acc_meter))
     print(' * Avg Train F1    {f1_meter.avg:.4f}'.format(f1_meter=f1_meter))
     
-    return losses.avg,hdices05.avg,f1_meter.avg,acc_meter.avg
-
+    return losses.avg,hdices05.avg,f1_meter.avg
+                                
 def validate(val_loader,
              model,
              criterion,
@@ -453,8 +467,6 @@ def validate(val_loader,
 
     losses = AverageMeter()
     hdices05 = AverageMeter()
-
-    acc_meter = AverageMeter()
     f1_meter = AverageMeter()
     
     # switch to evaluate mode
@@ -466,12 +478,11 @@ def validate(val_loader,
         for i, (input, target) in enumerate(val_loader):
             input = input.float().to(device)
             target = target.float().to(device)
-            weight = weight.float().to(device)
                     
             # compute output
             out = model(input)
 
-            loss = criterion(out, target, weight)
+            loss = criterion(out, target)
             _hard_dice_05 = hard_dice_05(out, target)
 
             # measure accuracy and record loss
@@ -482,11 +493,10 @@ def validate(val_loader,
             metric_list = batch_metrics(target,
                                         out,
                                         threshold=0.5,
-                                        f1_only=False)
+                                        f1_only=True)
 
             metric_list = list(map(list, zip(*metric_list)))
-            acc_meter.update(sum(metric_list[0])/len(metric_list[0]), input.size(0))         
-            f1_meter.update(sum(metric_list[1])/len(metric_list[1]), input.size(1))                
+            f1_meter.update(sum(metric_list[0])/len(metric_list[0]), input.size(1))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -503,12 +513,12 @@ def validate(val_loader,
                 print('Test: [{0}/{1}]\t'
                       'Time   {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Loss   {loss.val:.6f} ({loss.avg:.6f})\t'
-                      'ACC   {acc_meter.val:.4f} ({acc_meter.avg:.4f})\t'
-                      'F1   {f1_meter.val:.4f} ({f1_meter.avg:.4f})\t'
+                      'F1     {f1_meter.val:.4f} ({f1_meter.avg:.4f})\t'
                       'HDICE  {hdices05.val:.4f} ({hdices05.avg:.4f})\t'.format(
                        i, len(val_loader), batch_time=batch_time,
                           loss=losses,
-                          hdices05=hdices05,acc_meter=acc_meter,f1_meter=f1_meter))
+                          hdices05=hdices05,
+                          f1_meter=f1_meter))
                     
             # break out of cycle early if required
             # must be used with Dataloader shuffle = True
@@ -519,10 +529,9 @@ def validate(val_loader,
                 
     print(' * Avg Train Loss  {loss.avg:.6f}'.format(loss=losses))
     print(' * Avg Train HDICE {hdices05.avg:.4f}'.format(hdices05=hdices05))
-    print(' * Avg Train ACC   {acc_meter.avg:.4f}'.format(acc_meter=acc_meter))
     print(' * Avg Train F1    {f1_meter.avg:.4f}'.format(f1_meter=f1_meter))
     
-    return losses.avg,hdices05.avg,f1_meter.avg,acc_meter.avg
+    return losses.avg,hdices05.avg,f1_meter.avg
 
 def evaluate(val_loader,
              model,

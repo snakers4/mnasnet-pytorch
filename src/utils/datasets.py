@@ -380,7 +380,7 @@ class ImnetDataset(data.Dataset):
             for cluster,img_size in self.cluster_dict.items():
                 # leave only the train indexes
                 condition = (imnet_df.cluster == cluster)&(imnet_df.index.isin(self.val_idx))
-                cluster_list = list(multi_label_dataset[condition].index.values)
+                cluster_list = list(imnet_df[condition].index.values)
                 # reindex the cluster indices with respect to the train/val split values
                 cluster_list = [val_idx_dict[_]  for _ in cluster_list]
                 cluster_indices.append(cluster_list)
