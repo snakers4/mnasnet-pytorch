@@ -54,8 +54,9 @@ class OiDataset(data.Dataset):
                  stratify_label = 'class_count',
                  prob = 0.25,
                  oversampling_floor = 8,
-                 oversampling = False
+                 oversampling = False,
                  
+                multi_class = True
                 ):
         
         self.fold = fold
@@ -309,6 +310,7 @@ class ImnetDataset(data.Dataset):
                  imgs_folder = '../../imagenet/',
                  df_path = '../data/imnet_cluster_df_short.feather',
                  return_img_id = False,
+                 multi_class = False
                 ):
         
         self.std = std
@@ -323,6 +325,8 @@ class ImnetDataset(data.Dataset):
         self.prob = prob
         self.return_img_id = return_img_id
         self.preprocessing_type = preprocessing_type
+        
+        self.multi_class = multi_class
         
         self.cluster_dict = {
             0: (384,512),
@@ -403,9 +407,13 @@ class ImnetDataset(data.Dataset):
         img_path = os.path.join(self.imgs_folder,img_id)
         class_name = self.class_list[img_index]
         
-        ohe_values = np.zeros(len(self.label_list))
-        # only one label for imagenet images
-        ohe_values[self.label_list.index(class_name)] = 1
+        if self.multi_class:
+            ohe_values = np.zeros(len(self.label_list))
+            # only one label for imagenet images
+            ohe_values[self.label_list.index(class_name)] = 1
+            target = ohe_values
+        else:
+            target = self.label_list.index(class_name)
         
         target_size = self.cluster_dict[self.target_clusters[img_index]]
         img = self.preprocess_img(img_path,target_size)
@@ -418,10 +426,10 @@ class ImnetDataset(data.Dataset):
             
             if self.return_img_id == False:
                 return_tuple = (img,
-                                ohe_values)                
+                                target)                
             else:
                 return_tuple = (img,
-                                ohe_values,
+                                target,
                                 img_id)
             return return_tuple 
     def preprocess_img(self,
@@ -513,7 +521,8 @@ class TelenavClassification(data.Dataset):
                  df_path = '../data/telenav_df.feather',
                  return_img_id = False,
                  
-                 all_classes = True
+                 all_classes = True,
+                 multi_class = True
                 ):
         
         self.std = std

@@ -75,11 +75,13 @@ parser.add_argument('--augs_prob',           default=0.25,          type=float, 
                     
 # ============ optimization params ============#
 parser.add_argument('--lr',                  default=1e-3,          type=float, help='initial learning rate')
+parser.add_argument('--multi_class',         default=True,          type=str2bool, help='Whether to train in multi-class setting')
+
 parser.add_argument('--optimizer',           default='adam',        type=str, help='model optimizer')
 parser.add_argument('--lr_regime',           default='decay',       type=str, help='plateau_decay, clr, manual_decay')
 parser.add_argument('--epochs_grow_size',    default=10000,         type=int, help='number of epochs before size ration grows 2x.\
                                                                                     Batch-size is divided 2x. Max ratio is 1.\
-                                                                                    If 0 then no decay is applied')
+                                                                                    If 0 then no growth is applied')
 
 # ============ logging params and utilities ============#
 parser.add_argument('--print-freq',          default=10,            type=int, help='print frequency (default: 10)')
@@ -119,28 +121,39 @@ if args.tensorboard or args.tensorboard_images:
     csv_writer = CsvLogger(filepath='./runs/',
                            filename='{}.csv'.format(args.lognumber),
                            fieldsnames = ['epoch',
-                                          'train_acc', 'val_acc',
+                                          'train_acc1', 'val_acc1',
+                                          'train_acc5', 'val_acc5',
                                           'train_f1', 'val_f1'])
     
 def get_datasets(base_dset_kwargs):
     global args
     if args.dataset == 'imagenet':
-        train_dataset = ImnetDataset(**base_dset_kwargs)
-        val_dataset = ImnetDataset(**{**base_dset_kwargs, **{'mode':'val'}})
+        train_dataset = ImnetDataset(**{**base_dset_kwargs,
+                                      **{'multi_class':args.multi_class}})
+        val_dataset = ImnetDataset(**{**base_dset_kwargs,
+                                      **{'mode':'val',
+                                         'multi_class':args.multi_class}})
         train_sampler = ClusterRandomSampler(train_dataset,args.batch_size,True)  
         val_sampler = ClusterRandomSampler(val_dataset,args.batch_size,True)
         shuffle = False
     elif args.dataset == 'openimages':                  
-        train_dataset = OiDataset(**{**base_dset_kwargs, **{'img_size_cluster':'sample'}})
-        val_dataset = OiDataset(**{**base_dset_kwargs, **{'img_size_cluster':'sample',
-                                                        'mode':'val',
-                                                       }})
+        train_dataset = OiDataset(**{**base_dset_kwargs,
+                                     **{'img_size_cluster':'sample',
+                                        'multi_class':args.multi_class}})
+        val_dataset = OiDataset(**{**base_dset_kwargs,
+                                   **{'img_size_cluster':'sample',
+                                      'mode':'val',
+                                      'multi_class':args.multi_class,
+                                     }})
         train_sampler = ClusterRandomSampler(train_dataset,args.batch_size,True)  
         val_sampler = ClusterRandomSampler(val_dataset,args.batch_size,True)  
         shuffle = False
     elif args.dataset == 'telenav':   
-        train_dataset = TelenavClassification(**base_dset_kwargs)
-        val_dataset = TelenavClassification(**{**base_dset_kwargs, **{'mode':'val'}})
+        train_dataset = TelenavClassification(**{**base_dset_kwargs,
+                                                 **{'multi_class':args.multi_class}})
+        val_dataset = TelenavClassification(**{**base_dset_kwargs,
+                                               **{'mode':'val',
+                                                  'multi_class':args.multi_class}})
         train_sampler = None
         val_sampler = None
         shuffle = True
@@ -166,11 +179,12 @@ def get_datasets(base_dset_kwargs):
     return train_dataset,val_dataset,train_sampler,val_sampler,train_loader,val_loader
 
 def main():
-    global args, best_f1
+    global args, best_loss
     global writer,csv_writer
     global device, kwargs
   
-    base_model = load_model(arch=args.arch)
+    base_model = load_model(arch=args.arch,
+                            pretrained = True)
     
     if args.use_parallel:
         model = FineTuneModelPool(base_model,
@@ -215,7 +229,7 @@ def main():
             print("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(args.resume)
             args.start_epoch = checkpoint['epoch']
-            best_f1 = checkpoint['best_f1']
+            best_loss = checkpoint['best_loss']
             if args.use_parallel:
                 model.module.load_state_dict(checkpoint['state_dict'])
             else:
@@ -248,7 +262,11 @@ def main():
         
         train_dataset,val_dataset,train_sampler,val_sampler,train_loader,val_loader = get_datasets(base_dset_kwargs)
         
-        criterion = MultiClassBCELoss().to(device)
+        if args.multi_class:
+            criterion = MultiClassBCELoss().to(device)
+        else:
+            criterion = nn.CrossEntropyLoss().cuda().to(device)
+            
         hard_dice_05 = HardDice(threshold=0.5)
 
 
@@ -280,19 +298,19 @@ def main():
                                                                                                                 **{'size_ratio':train_dataset.size_ratio*2}})
 
             # train for one epoch
-            train_loss, train_hard_dice_05, train_f1 = train(train_loader,
-                                                             model,
-                                                             criterion,
-                                                             hard_dice_05,
-                                                             optimizer,
-                                                             epoch,
-                                                             scheduler)
+            train_loss, train_hard_dice_05, train_f1, train_acc1, train_acc5 = train(train_loader,
+                                                                                     model,
+                                                                                     criterion,
+                                                                                     hard_dice_05,
+                                                                                     optimizer,
+                                                                                     epoch,
+                                                                                     scheduler)
 
             # evaluate on validation set
-            val_loss, val_hard_dice_05, val_f1 = validate(val_loader,
-                                                         model,                                                                        
-                                                         criterion,
-                                                         hard_dice_05)
+            val_loss, val_hard_dice_05, val_f1, val_acc1, val_acc5 = validate(val_loader,
+                                                                              model,
+                                                                              criterion,
+                                                                              hard_dice_05)
             
             if args.lr_regime=='auto_decay':
                 scheduler.step()
@@ -305,35 +323,46 @@ def main():
             if args.tensorboard:
                 writer.add_scalars('epoch/epoch_losses', {'train_loss': train_loss,
                                                          'val_loss': val_loss},epoch+1)
+                if train_hard_dice_05 and val_hard_dice_05: 
+                    writer.add_scalars('epoch/epoch_hdice05', {'train_hdice': train_hard_dice_05,
+                                                              'val_hdice': val_hard_dice_05},epoch+1)
+                if train_acc1 and val_acc1:
+                    writer.add_scalars('epoch/epoch_acc1', {'train_acc1': train_acc1,
+                                                            'val_acc1': val_acc1},epoch+1)
+                else:
+                    train_acc1=0
+                    val_acc1=0
                     
-                writer.add_scalars('epoch/epoch_hdice05', {'train_hdice': train_hard_dice_05,
-                                                          'val_hdice': val_hard_dice_05},epoch+1)
-                
-                """ 
-                writer.add_scalars('epoch/epoch_acc1', {'train_acc1': train_acc1,
-                                                        'val_acc1': val_acc1},epoch+1)
-                
-                writer.add_scalars('epoch/epoch_acc5', {'train_acc5': train_acc5,
-                                                        'val_acc5': val_acc5},epoch+1)                
-                """
-                
-                writer.add_scalars('epoch/epoch_f1', {'train_f1': train_f1,
-                                                      'val_f1': val_f1},epoch+1)                        
+                if train_acc5 and val_acc5:
+                    writer.add_scalars('epoch/epoch_acc5', {'train_acc5': train_acc5,
+                                                            'val_acc5': val_acc5},epoch+1)
+                else:
+                    train_acc5=0
+                    val_acc5=0
+                    
+                if train_f1 and val_f1:
+                    writer.add_scalars('epoch/epoch_f1', {'train_f1': train_f1,
+                                                          'val_f1': val_f1},epoch+1)
+                else:
+                    train_f1=0
+                    val_f1=0
 
             csv_writer.write({'epoch':epoch+1,
-                              'train_acc':train_hard_dice_05,
-                              'val_acc':val_hard_dice_05,
+                              'train_acc1':train_acc1,
+                              'val_acc1':val_acc1,
+                              'train_acc5':train_acc5,
+                              'val_acc5':val_acc5,                              
                               'train_f1':train_f1,
                               'val_f1':val_f1})  
     
             # remember best prec@1 and save checkpoint
-            is_best = val_f1 > best_f1
-            best_f1 = max(val_f1, best_f1)
+            is_best = val_loss < best_loss
+            best_loss = min(val_loss, best_loss)
             save_checkpoint({
                 'epoch': epoch + 1,
                 'optimizer': optimizer.state_dict(),
                 'state_dict': model.state_dict(),
-                'best_f1': best_f1,
+                'best_loss': best_loss,
                 },
                 is_best,
                 'weights/{}_checkpoint.pth.tar'.format(str(args.lognumber)),
@@ -358,9 +387,13 @@ def train(train_loader,
     data_time = AverageMeter()
 
     losses = AverageMeter()
-    hdices05 = AverageMeter()
-
-    f1_meter = AverageMeter()    
+    
+    if args.multi_class:
+        hdices05 = AverageMeter()
+        f1_meter = AverageMeter()    
+    else:
+        acc1_meter = AverageMeter()
+        acc5_meter = AverageMeter()
 
     # switch to train mode
     model.train()
@@ -372,12 +405,14 @@ def train(train_loader,
         data_time.update(time.time() - end)
 
         input = input.float().to(device)
-        target = target.float().to(device)                    
-                    
+        if args.multi_class:
+            target = target.float().to(device)                    
+        else:
+            target = target.long().to(device)
+            
         out = model(input)
         
         loss = criterion(out, target)
-        _hard_dice_05 = hard_dice_05(out, target)
                     
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -390,19 +425,26 @@ def train(train_loader,
 
         # measure accuracy and record loss
         losses.update(loss.item(), input.size(0))
-        hdices05.update(_hard_dice_05.item(), input.size(0))
-        
+
         # log the current lr
         current_lr = optimizer.state_dict()['param_groups'][0]['lr']
 
-        out = m(out)
-        metric_list = batch_metrics(target,
-                                    out,
-                                    threshold=0.5,
-                                    f1_only=True)
         
-        metric_list = list(map(list, zip(*metric_list)))
-        f1_meter.update(sum(metric_list[0])/len(metric_list[0]), input.size(1))   
+        if args.multi_class:
+            _hard_dice_05 = hard_dice_05(out, target)
+            hdices05.update(_hard_dice_05.item(), input.size(0))
+            out = m(out)
+            metric_list = batch_metrics(target,
+                                        out,
+                                        threshold=0.5,
+                                        f1_only=True)
+
+            metric_list = list(map(list, zip(*metric_list)))
+            f1_meter.update(sum(metric_list[0])/len(metric_list[0]), input.size(1))
+        else:
+            prec1, prec5 = accuracy(out.detach(), target, topk=(1, 5))
+            acc1_meter.update(prec1.item(), input.size(0))
+            acc5_meter.update(prec5.item(), input.size(0))            
 
                                 
         #============ TensorBoard logging ============#
@@ -417,16 +459,28 @@ def train(train_loader,
             scheduler.batch_step()        
 
         if i % args.print_freq == 0:
-            print('Epoch: [{0}][{1}/{2}]\t'
-                  'Time   {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Data   {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'Loss   {loss.val:.6f} ({loss.avg:.6f})\t'              
-                  'F1     {f1_meter.val:.4f} ({f1_meter.avg:.4f})\t'
-                  'HDICE  {hdices05.val:.4f} ({hdices05.avg:.4f})\t'.format(
-                   epoch,i, len(train_loader),
-                   batch_time=batch_time,data_time=data_time,
-                   loss=losses,
-                   hdices05=hdices05,f1_meter=f1_meter))
+            if args.multi_class: 
+                print('Epoch: [{0}][{1}/{2}]\t'
+                      'Time   {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                      'Data   {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                      'Loss   {loss.val:.6f} ({loss.avg:.6f})\t'              
+                      'F1     {f1_meter.val:.4f} ({f1_meter.avg:.4f})\t'
+                      'HDICE  {hdices05.val:.4f} ({hdices05.avg:.4f})\t'.format(
+                       epoch,i, len(train_loader),
+                       batch_time=batch_time,data_time=data_time,
+                       loss=losses,
+                       hdices05=hdices05,f1_meter=f1_meter))
+            else:
+                print('Epoch: [{0}][{1}/{2}]\t'
+                      'Time   {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                      'Data   {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                      'Loss   {loss.val:.6f} ({loss.avg:.6f})\t'              
+                      'ACC1   {acc1_meter.val:.4f} ({acc1_meter.avg:.4f})\t'
+                      'ACC5   {acc5_meter.val:.4f} ({acc5_meter.avg:.4f})\t'.format(
+                       epoch,i, len(train_loader),
+                       batch_time=batch_time,data_time=data_time,
+                       loss=losses,
+                       acc1_meter=acc1_meter,acc5_meter=acc5_meter))                
             
         # dummy_img = torch.rand(32, 3, 64, 64)  # output from network
         
@@ -445,12 +499,15 @@ def train(train_loader,
                 print('Proceed to next epoch on {}/{}'.format(i,len(train_loader)))
                 break
 
-    print(' * Avg Train Loss  {loss.avg:.6f}'.format(loss=losses))
-    print(' * Avg Train HDICE {hdices05.avg:.4f}'.format(hdices05=hdices05))
-    print(' * Avg Train F1    {f1_meter.avg:.4f}'.format(f1_meter=f1_meter))
+    if args.multi_class: 
+        print(' * Avg Train HDICE {hdices05.avg:.4f}'.format(hdices05=hdices05))
+        print(' * Avg Train F1    {f1_meter.avg:.4f}'.format(f1_meter=f1_meter))
+        return losses.avg,hdices05.avg,f1_meter.avg,None,None
+    else:
+        print(' * Avg Train ACC1 {acc1_meter.avg:.4f}'.format(acc1_meter=acc1_meter))
+        print(' * Avg Train AcC5 {acc5_meter.avg:.4f}'.format(acc5_meter=acc5_meter))
+        return losses.avg,None,None,acc1_meter.avg,acc5_meter.avg
     
-    return losses.avg,hdices05.avg,f1_meter.avg
-                                
 def validate(val_loader,
              model,
              criterion,
@@ -466,8 +523,13 @@ def validate(val_loader,
     batch_time = AverageMeter()
 
     losses = AverageMeter()
-    hdices05 = AverageMeter()
-    f1_meter = AverageMeter()
+    
+    if args.multi_class:
+        hdices05 = AverageMeter()
+        f1_meter = AverageMeter()    
+    else:
+        acc1_meter = AverageMeter()
+        acc5_meter = AverageMeter()
     
     # switch to evaluate mode
     model.eval()
@@ -477,27 +539,36 @@ def validate(val_loader,
     with torch.no_grad():
         for i, (input, target) in enumerate(val_loader):
             input = input.float().to(device)
-            target = target.float().to(device)
+            
+            if args.multi_class:
+                target = target.float().to(device)                    
+            else:
+                target = target.long().to(device)
                     
             # compute output
             out = model(input)
 
             loss = criterion(out, target)
-            _hard_dice_05 = hard_dice_05(out, target)
 
             # measure accuracy and record loss
             losses.update(loss.item(), input.size(0))
-            hdices05.update(_hard_dice_05.item(), input.size(0))
 
-            out = m(out)
-            metric_list = batch_metrics(target,
-                                        out,
-                                        threshold=0.5,
-                                        f1_only=True)
+            if args.multi_class:
+                _hard_dice_05 = hard_dice_05(out, target)
+                hdices05.update(_hard_dice_05.item(), input.size(0))
+                out = m(out)
+                metric_list = batch_metrics(target,
+                                            out,
+                                            threshold=0.5,
+                                            f1_only=True)
 
-            metric_list = list(map(list, zip(*metric_list)))
-            f1_meter.update(sum(metric_list[0])/len(metric_list[0]), input.size(1))
-
+                metric_list = list(map(list, zip(*metric_list)))
+                f1_meter.update(sum(metric_list[0])/len(metric_list[0]), input.size(1))
+            else:
+                prec1, prec5 = accuracy(out, target, topk=(1, 5))
+                acc1_meter.update(prec1.item(), input.size(0))
+                acc5_meter.update(prec5.item(), input.size(0))  
+            
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
@@ -510,15 +581,28 @@ def validate(val_loader,
             valid_minib_counter += 1
 
             if i % args.print_freq == 0:
-                print('Test: [{0}/{1}]\t'
-                      'Time   {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                      'Loss   {loss.val:.6f} ({loss.avg:.6f})\t'
-                      'F1     {f1_meter.val:.4f} ({f1_meter.avg:.4f})\t'
-                      'HDICE  {hdices05.val:.4f} ({hdices05.avg:.4f})\t'.format(
-                       i, len(val_loader), batch_time=batch_time,
-                          loss=losses,
-                          hdices05=hdices05,
-                          f1_meter=f1_meter))
+                if args.multi_class: 
+                    print('Epoch: [{0}][{1}/{2}]\t'
+                          'Time   {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                          'Data   {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                          'Loss   {loss.val:.6f} ({loss.avg:.6f})\t'              
+                          'F1     {f1_meter.val:.4f} ({f1_meter.avg:.4f})\t'
+                          'HDICE  {hdices05.val:.4f} ({hdices05.avg:.4f})\t'.format(
+                           epoch,i, len(train_loader),
+                           batch_time=batch_time,data_time=data_time,
+                           loss=losses,
+                           hdices05=hdices05,f1_meter=f1_meter))
+                else:
+                    print('Epoch: [{0}][{1}/{2}]\t'
+                          'Time   {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                          'Data   {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                          'Loss   {loss.val:.6f} ({loss.avg:.6f})\t'              
+                          'ACC1   {acc1_meter.val:.4f} ({acc1_meter.avg:.4f})\t'
+                          'ACC5   {acc5_meter.val:.4f} ({acc5_meter.avg:.4f})\t'.format(
+                           epoch,i, len(train_loader),
+                           batch_time=batch_time,data_time=data_time,
+                           loss=losses,
+                           acc1_meter=acc1_meter,acc5_meter=acc5_meter)) 
                     
             # break out of cycle early if required
             # must be used with Dataloader shuffle = True
@@ -527,11 +611,14 @@ def validate(val_loader,
                     print('Proceed to next epoch on {}/{}'.format(i,len(val_loader)))
                     break
                 
-    print(' * Avg Train Loss  {loss.avg:.6f}'.format(loss=losses))
-    print(' * Avg Train HDICE {hdices05.avg:.4f}'.format(hdices05=hdices05))
-    print(' * Avg Train F1    {f1_meter.avg:.4f}'.format(f1_meter=f1_meter))
-    
-    return losses.avg,hdices05.avg,f1_meter.avg
+    if args.multi_class: 
+        print(' * Avg Train HDICE {hdices05.avg:.4f}'.format(hdices05=hdices05))
+        print(' * Avg Train F1    {f1_meter.avg:.4f}'.format(f1_meter=f1_meter))
+        return losses.avg,hdices05.avg,f1_meter.avg,None,None
+    else:
+        print(' * Avg Train ACC1 {acc1_meter.avg:.4f}'.format(acc1_meter=acc1_meter))
+        print(' * Avg Train AcC5 {acc5_meter.avg:.4f}'.format(acc5_meter=acc5_meter))
+        return losses.avg,None,None,acc1_meter.avg,acc5_meter.avg
 
 def evaluate(val_loader,
              model,
