@@ -101,7 +101,7 @@ parser.add_argument('--evaluate',            dest='evaluate',      action='store
 
 train_minib_counter = 0
 valid_minib_counter = 0
-best_f1 = 1000
+best_loss = 1000
 
 args = parser.parse_args()
 print(args)
@@ -315,7 +315,7 @@ def main():
             if args.lr_regime=='auto_decay':
                 scheduler.step()
             elif args.lr_regime=='plateau_decay':
-                scheduler.step(val_f1)
+                scheduler.step(val_loss)
                 
                 
             #============ TensorBoard logging ============#
@@ -381,7 +381,8 @@ def train(train_loader,
     global logger
         
     # scheduler.batch_step()
-    m = torch.nn.Sigmoid()
+    # m = torch.nn.Sigmoid()
+    sm = torch.nn.Softmax(dim=1)
     
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -442,6 +443,7 @@ def train(train_loader,
             metric_list = list(map(list, zip(*metric_list)))
             f1_meter.update(sum(metric_list[0])/len(metric_list[0]), input.size(1))
         else:
+            out = sm(out)
             prec1, prec5 = accuracy(out.detach(), target, topk=(1, 5))
             acc1_meter.update(prec1.item(), input.size(0))
             acc5_meter.update(prec5.item(), input.size(0))            
@@ -505,7 +507,7 @@ def train(train_loader,
         return losses.avg,hdices05.avg,f1_meter.avg,None,None
     else:
         print(' * Avg Train ACC1 {acc1_meter.avg:.4f}'.format(acc1_meter=acc1_meter))
-        print(' * Avg Train AcC5 {acc5_meter.avg:.4f}'.format(acc5_meter=acc5_meter))
+        print(' * Avg Train ACC5 {acc5_meter.avg:.4f}'.format(acc5_meter=acc5_meter))
         return losses.avg,None,None,acc1_meter.avg,acc5_meter.avg
     
 def validate(val_loader,
@@ -517,8 +519,8 @@ def validate(val_loader,
     global valid_minib_counter
     global logger
     
-    m = torch.nn.Sigmoid()    
-    
+    # m = torch.nn.Sigmoid()    
+    sm = torch.nn.Softmax(dim=1)
     # scheduler.batch_step()    
     batch_time = AverageMeter()
 
@@ -565,6 +567,7 @@ def validate(val_loader,
                 metric_list = list(map(list, zip(*metric_list)))
                 f1_meter.update(sum(metric_list[0])/len(metric_list[0]), input.size(1))
             else:
+                out = sm(out)                
                 prec1, prec5 = accuracy(out, target, topk=(1, 5))
                 acc1_meter.update(prec1.item(), input.size(0))
                 acc5_meter.update(prec5.item(), input.size(0))  
@@ -582,25 +585,23 @@ def validate(val_loader,
 
             if i % args.print_freq == 0:
                 if args.multi_class: 
-                    print('Epoch: [{0}][{1}/{2}]\t'
+                    print('            [{0}/{1}]\t'
                           'Time   {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                          'Data   {data_time.val:.3f} ({data_time.avg:.3f})\t'
                           'Loss   {loss.val:.6f} ({loss.avg:.6f})\t'              
                           'F1     {f1_meter.val:.4f} ({f1_meter.avg:.4f})\t'
                           'HDICE  {hdices05.val:.4f} ({hdices05.avg:.4f})\t'.format(
-                           epoch,i, len(train_loader),
-                           batch_time=batch_time,data_time=data_time,
+                           i, len(train_loader),
+                           batch_time=batch_time,
                            loss=losses,
                            hdices05=hdices05,f1_meter=f1_meter))
                 else:
-                    print('Epoch: [{0}][{1}/{2}]\t'
+                    print('            [{0}/{1}]\t'
                           'Time   {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                          'Data   {data_time.val:.3f} ({data_time.avg:.3f})\t'
                           'Loss   {loss.val:.6f} ({loss.avg:.6f})\t'              
                           'ACC1   {acc1_meter.val:.4f} ({acc1_meter.avg:.4f})\t'
                           'ACC5   {acc5_meter.val:.4f} ({acc5_meter.avg:.4f})\t'.format(
-                           epoch,i, len(train_loader),
-                           batch_time=batch_time,data_time=data_time,
+                           i, len(val_loader),
+                           batch_time=batch_time, 
                            loss=losses,
                            acc1_meter=acc1_meter,acc5_meter=acc5_meter)) 
                     
@@ -617,7 +618,7 @@ def validate(val_loader,
         return losses.avg,hdices05.avg,f1_meter.avg,None,None
     else:
         print(' * Avg Train ACC1 {acc1_meter.avg:.4f}'.format(acc1_meter=acc1_meter))
-        print(' * Avg Train AcC5 {acc5_meter.avg:.4f}'.format(acc5_meter=acc5_meter))
+        print(' * Avg Train ACC5 {acc5_meter.avg:.4f}'.format(acc5_meter=acc5_meter))
         return losses.avg,None,None,acc1_meter.avg,acc5_meter.avg
 
 def evaluate(val_loader,
