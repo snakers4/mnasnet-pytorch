@@ -480,9 +480,10 @@ class ImnetDataset(data.Dataset):
                                                  std=self.std),
                             ])          
         elif self.preprocessing_type == 3:
-            # some additional augmentations
+            # fixed resize to a cluster-defined size
+            # some additional Inception inspired augmentations
             add_transforms = [transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
-                              RandomResizedCropRect(final_size,scale=(0.8, 1.0), ratio=(0.8, 1.2), interpolation=2),
+                              RandomResizedCropRect(final_size,scale=(0.7, 1.0), ratio=(0.7, 1.2), interpolation=2),
                               ]
 
             preprocessing = transforms.Compose([
