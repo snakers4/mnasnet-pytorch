@@ -106,16 +106,12 @@ class MBConv_block(nn.Module):
     def __init__(self,
                  in_channels,
                  channel_factor,
-                 out_channels=None,
                  kernel_size=3,
-                 reduce=False):
+                 ):
         super(MBConv_block, self).__init__()
     
         self.in_channels = in_channels
-        out_channels = out_channels if out_channels else in_channels
-        self.out_channels = out_channels
         padding = kernel_size // 2
-        stride = 2 if reduce else 1
         
         self.sequence = nn.Sequential(ConvBlock(in_=in_channels,
                                                 out_=in_channels*channel_factor,
@@ -124,19 +120,18 @@ class MBConv_block(nn.Module):
                                       ConvBlock(in_=in_channels*channel_factor,
                                                 out_=in_channels * channel_factor,
                                                 kernel_size=kernel_size,
-                                                stride=stride,
+                                                stride=1,
                                                 padding=padding,
                                                 groups=in_channels*channel_factor),
                                       ConvBlock(in_=in_channels*channel_factor,
-                                                out_=out_channels,
+                                                out_=in_channels,
                                                 kernel_size=1,
                                                 stride=1))
                                       
     def forward(self, input):
-        if self.in_channels == self.out_channels:
-            output = input + self.sequence(input)
-        else: 
-            output = self.sequence(input)
+        
+        output = input + self.sequence(input)
+        
         if debug_global:
             print(output.shape)            
         return output      
@@ -148,37 +143,52 @@ class MBConv(nn.Module):
                  channel_factor,
                  layers,
                  kernel_size=3,
-                 reduce=True):
+                 reduce=True,
+                 cut_channels_first=True):
         super(MBConv, self).__init__()
         
+        if cut_channels_first:
+            block_channels = out_channels
+        else:
+            block_channels = in_channels
         
-        self.sequence = [MBConv_block(in_channels,
-                                      channel_factor,
-                                      out_channels,
-                                      kernel_size,
-                                      reduce=reduce)] + \
-                        [MBConv_block(out_channels,
-                                      channel_factor,
-                                      kernel_size=kernel_size)] * (layers-1)
+        stride = 2 if reduce else 1
         
-        self.sequence = nn.Sequential(*self.sequence)
+        self.sequence = [ConvBlock(in_=in_channels,
+                                  out_=out_channels,
+                                  kernel_size=1,
+                                  stride=stride)] + \
+                        [MBConv_block(block_channels,
+                                      channel_factor,
+                                      kernel_size)]  * layers
+        if cut_channels_first:
+            self.sequence = nn.Sequential(*self.sequence)
+        else:
+            self.sequence = nn.Sequential(*list(reversed(self.sequence)))
+            
         
     def forward(self, input):
         output = self.sequence(input)
         return output
 
 class Mnasnet(nn.Module):
-    def __init__(self):
+    def __init__(self, cut_channels_first=True):
         super(Mnasnet, self).__init__()
         
         self.features = nn.Sequential(ConvBlock(3, 32, kernel_size=3, stride=2, padding=1),
                                       SepConv(32, 16, kernel_size=3),
-                                      MBConv(16, 24, channel_factor=3, layers=3, kernel_size=3, reduce=True),
-                                      MBConv(24, 40, channel_factor=3, layers=3, kernel_size=5, reduce=True),
-                                      MBConv(40, 80, channel_factor=6, layers=3, kernel_size=5, reduce=True),
-                                      MBConv(80, 96, channel_factor=6, layers=2, kernel_size=3, reduce=False),
-                                      MBConv(96, 192, channel_factor=6, layers=4, kernel_size=5, reduce=True),
-                                      MBConv(192, 320, channel_factor=6, layers=1, kernel_size=3, reduce=False)
+                                      MBConv(16, 24, channel_factor=3, layers=3, kernel_size=3, reduce=True, 
+                                             cut_channels_first=cut_channels_first),
+                                      MBConv(24, 40, channel_factor=3, layers=3, kernel_size=5, reduce=True, 
+                                             cut_channels_first=cut_channels_first),
+                                      MBConv(40, 80, channel_factor=6, layers=3, kernel_size=5, reduce=True, 
+                                             cut_channels_first=cut_channels_first),
+                                      MBConv(80, 96, channel_factor=6, layers=2, kernel_size=3, reduce=False, 
+                                             cut_channels_first=cut_channels_first),
+                                      MBConv(96, 192, channel_factor=6, layers=4, kernel_size=5, reduce=True, 
+                                             cut_channels_first=cut_channels_first),
+                                      MBConv(192, 320, channel_factor=6, layers=1, kernel_size=3, reduce=False, 
+                                             cut_channels_first=cut_channels_first)
                                      )
         
         self.init_params()
