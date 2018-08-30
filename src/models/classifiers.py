@@ -10,7 +10,7 @@ def load_model(arch='resnet18',
         model = models.__dict__[arch](pretrained=pretrained)
         print('Resnet initialized')        
     elif arch.startswith('mnasnet'):
-        model = Mnasnet()
+        model = Mnasnet(cut_channels_first)
         print('Mnasnet initialized')
     else:
         raise("Finetuning not supported on this architecture yet") 
@@ -71,6 +71,10 @@ class FineTuneModelPool(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Dropout(),                    
                 nn.Linear(256, num_classes)
+            )
+        elif classifier_config == '320':
+            self.classifier = nn.Sequential(
+                nn.Linear(final_feature_map, num_classes)
             )
         else:
             raise ValueError("Finetuning not supported on this architecture yet")            
