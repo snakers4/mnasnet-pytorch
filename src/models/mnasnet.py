@@ -5,7 +5,8 @@ import torch.nn as nn
 from torch.nn import init
 import torch.utils.model_zoo as model_zoo
 
-default_activation = nn.ReLU6
+# default_activation = nn.ReLU6
+default_activation = nn.ReLU
 debug_global = False
 
 __all__ = ['mnasnet', 'MNasNet']
@@ -41,7 +42,8 @@ class ConvBlock(nn.Module):
                  stride=1,
                  padding=0,
                  groups=1,
-                 activation=default_activation):
+                 activation=default_activation,
+                 momentum=0.03):
         super(ConvBlock, self).__init__()
         self.conv = nn.Conv2d(in_,
                               out_,
@@ -50,7 +52,7 @@ class ConvBlock(nn.Module):
                               padding=padding,
                               groups=groups,
                               bias=True)
-        self.bn = nn.BatchNorm2d(out_)
+        self.bn = nn.BatchNorm2d(out_,momentum=momentum)
         self.activation = activation(inplace=True)
         
     def forward(self, x):
