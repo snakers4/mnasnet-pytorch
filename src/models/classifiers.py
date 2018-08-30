@@ -10,7 +10,7 @@ def load_model(arch='resnet18',
         model = models.__dict__[arch](pretrained=pretrained)
         print('Resnet initialized')        
     elif arch.startswith('mnasnet'):
-        model = Mnasnet(cut_channels_first)
+        model = Mnasnet(cut_channels_first=False)
         print('Mnasnet initialized')
     else:
         raise("Finetuning not supported on this architecture yet") 
