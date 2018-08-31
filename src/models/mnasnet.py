@@ -156,8 +156,9 @@ class MBConv(nn.Module):
         
         self.sequence = [ConvBlock(in_=in_channels,
                                   out_=out_channels,
-                                  kernel_size=1,
-                                  stride=stride)] + \
+                                  kernel_size=3,
+                                  stride=stride,
+                                  padding=1)] + \
                         [MBConv_block(block_channels,
                                       channel_factor,
                                       kernel_size)]  * layers
