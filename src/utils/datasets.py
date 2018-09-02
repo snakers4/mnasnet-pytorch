@@ -488,7 +488,6 @@ class ImnetDataset(data.Dataset):
 
             preprocessing = transforms.Compose([
                             transforms.Resize(final_size),
-
                             transforms.RandomApply(add_transforms, p=self.prob),
                             transforms.RandomHorizontalFlip(p=self.prob),
                             transforms.RandomVerticalFlip(p=self.prob),
@@ -508,14 +507,23 @@ class ImnetDataset(data.Dataset):
                                                  std=self.std),
                             ])
         elif self.preprocessing_type == 5:
-            # fixed resize to a cluster-defined size
             preprocessing = transforms.Compose([
                             RandomResizedCropRect(self.fixed_size),
                             transforms.RandomHorizontalFlip(),
                             transforms.ToTensor(),
                             transforms.Normalize(mean=self.mean,
                                                  std=self.std),
-                            ])              
+                            ])
+            
+        elif self.preprocessing_type == 6:
+            # standard size, random resized crop
+            preprocessing = transforms.Compose([
+                            RandomResizedCropRect(self.fixed_size,scale=(0.7, 1.0), ratio=(0.7, 1.2), interpolation=2),
+                            transforms.RandomHorizontalFlip(),
+                            transforms.ToTensor(),
+                            transforms.Normalize(mean=self.mean,
+                                                 std=self.std),
+                            ]) 
         else:
             raise ValueError('This augmentation is not supported')
 

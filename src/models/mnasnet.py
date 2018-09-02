@@ -43,7 +43,7 @@ class ConvBlock(nn.Module):
                  padding=0,
                  groups=1,
                  activation=default_activation,
-                 momentum=0.1):
+                 momentum=0.03):
         super(ConvBlock, self).__init__()
         self.conv = nn.Conv2d(in_,
                               out_,
