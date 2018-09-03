@@ -43,7 +43,7 @@ class ConvBlock(nn.Module):
                  padding=0,
                  groups=1,
                  activation=default_activation,
-                 momentum=0.03):
+                 momentum=0.1):
         super(ConvBlock, self).__init__()
         self.conv = nn.Conv2d(in_,
                               out_,
@@ -52,7 +52,7 @@ class ConvBlock(nn.Module):
                               padding=padding,
                               groups=groups,
                               bias=True)
-        self.bn = nn.BatchNorm2d(out_,momentum=momentum)
+        self.bn = nn.BatchNorm2d(out_)
         self.activation = activation(inplace=True)
         
     def forward(self, x):

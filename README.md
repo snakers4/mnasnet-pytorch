@@ -80,7 +80,7 @@ self.cluster_dict = {
 Clusters can be used to train using [rectangular](http://www.fast.ai/2018/08/10/fastai-diu-imagenet/) crops instead of squares.
 Also obviously, you would need the ImageNET dataset.
 
-If you need our `imnet_cluster_df_short.feather` - you can just use this file.
+If you need our `imnet_cluster_df_short.feather` - you can just use this [file](https://drive.google.com/open?id=190q7vrOgNRGgJJiJObqLLKbNcUFG6Mml).
 
 
 ## Typical launch code
